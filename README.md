@@ -20,5 +20,5 @@ This project aims to reproduce and optimize various operators used in deep learn
 
 1. **Clone the Repository**:
    ```bash
-   git clone https://github.com/your-username/cuda-operators.git
-   cd cuda-operators
+   git clone https://github.com/your-username/CUDA-Ops.git
+   cd CUDA-Ops
