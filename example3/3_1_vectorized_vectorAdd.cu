@@ -83,14 +83,12 @@ int main() {
 
     // check GPU result with CPU
     for (int i = 0; i < 20; ++i) {
-        /* 测量显存带宽时, 修改C_cpu_res[i]为0 */
         if (fabs(hz_cpu[i] - hz[i]) > 1e-6) {
             printf("Result verification failed at element index %d!\n", i);
         }
     }
     std::cout << "Result right" << std::endl;
     unsigned N = ARRAY_SIZE * 4;
-    /* 测量显存带宽时, 根据实际读写的数组个数, 指定下行是 1*(float)N 还是 2*(float)N 还是 3*(float)N  */
     printf("Mem BW= %f (GB/sec)\n", 3 * (float)N / milliseconds / 1e6);
 
     // free resource

@@ -2,11 +2,8 @@
 
 __global__ void sum(float *x)
 {
-    // 泛指当前block在所有block范围内的id
     int block_id = blockIdx.x;
-    // 泛指当前线程在所有block范围内的全局id
     int global_tid = blockIdx.x * blockDim.x + threadIdx.x;
-    // 泛指当前线程在其block内的id
     int local_tid = threadIdx.x;
     printf("current block=%d, thread id in current block =%d, global thread id=%d\n", block_id, local_tid, global_tid);
     x[global_tid] += 1;
@@ -14,12 +11,12 @@ __global__ void sum(float *x)
 
 int main(){
     int N = 32;
-    int nbytes = N * sizeof(float);  // 计算32个float数据的大小，总计32*4=128
+    int nbytes = N * sizeof(float);
 
-    float *dx, *hx; // device指针和host指针
+    float *dx, *hx;
 
     /* allocate GPU mem */
-    cudaMalloc((void **)&dx, nbytes);//思考为什么要用二级指针
+    cudaMalloc((void **)&dx, nbytes);
 
     /* allocate CPU mem */
     hx = (float*)malloc(nbytes);
