@@ -19,7 +19,7 @@ __global__ void accumulator_v0(const float *input, float *output) {
         unsigned int index = 2 * step * tid;  // v0.3 step=1, first 4 warp(128 threads) process; step=2 first 2 warps process;  step=4, first 1 warp process
         if (index < blockDim.x) {
 //             shared_float_256[tid] += shared_float_256[tid + step];  // v0.1/v0.2
-            shared_float_256[index] += shared_float_256[index + step];  // v0.3
+            shared_float_256[index] += shared_float_256[index + step];  // v1
             __syncthreads();
         }
     }
