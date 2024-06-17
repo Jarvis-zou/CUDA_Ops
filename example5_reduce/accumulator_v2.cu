@@ -31,11 +31,16 @@ __global__ void accumulator_v2(const float *input, float *output) {
     optimization effectively prevents this.
     */
     for (unsigned int index = blockDim.x / 2; index > 0; index >>= 1) {
+        /* iter1: warp0(row0) = row0 + row3, warp1(row1) = row1 + row4, warp2(row2) = row2 + row5, warp3(row3) = row3 + row7
+         * iter2: warp0(row0) = row0 + row2, warp1(row1) = row1 + row3
+         * iter3: warp0(row0) = row0 + row1
+         * iter4: index = 16, for the next iteration, only row1 will be operated and (16/8/4/2/1 threads in warp0 will be used)*/
         if (tid < index) {
             shared_float_256[tid] += shared_float_256[tid + index];
         }
         __syncthreads();
     }
+
     if (tid == 0) output[blockIdx.x] = shared_float_256[0];
 }
 

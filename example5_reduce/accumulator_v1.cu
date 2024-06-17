@@ -2,7 +2,7 @@
 #define N 25600000
 
 template<int blockSize>
-__global__ void accumulator_v0(const float *input, float *output) {
+__global__ void accumulator_v1(const float *input, float *output) {
     // Example for using shared memory, each block has individual shared memory space.
     __shared__ float shared_float_256[blockSize]; // init an array stores 256 float numbers on shared memory for blockSize(256) threads to use
     unsigned int tid = threadIdx.x;  // thread id in this block
@@ -10,16 +10,17 @@ __global__ void accumulator_v0(const float *input, float *output) {
     shared_float_256[tid] = input[global_tid];  // load corresponding float value into block memory
     __syncthreads();
 
+    // this method eliminates warp divergence overhead
     // First step = 1, means threads [(0,1), (2,3), ..., (254, 255)] will add together and store results at [0, 2, 4, ..., 254]
     // Second step = 2, first round of results have been stored at tid [0, 2, 4, ..., 254], then add [(0,2), (4,6), ..., (252, 254)], stored at [0, 4, 8, ..., 252]
-    // keep iteration till all data added and stored at
+    // keep iteration till all data added and stored
     for (unsigned int step = 1; step < blockDim.x; step *= 2) {
 //        if (tid % (2 * step) == 0) {  // v0.1
-//        if ((tid & (2 * step - 1)) == 0) {  // v0.2
+//        if ((tid & (2 * step - 1)) == 0) {  // v0.2 should be a little bit faster
         unsigned int index = 2 * step * tid;  // v0.3 step=1, first 4 warp(128 threads) process; step=2 first 2 warps process;  step=4, first 1 warp process
         if (index < blockDim.x) {
 //             shared_float_256[tid] += shared_float_256[tid + step];  // v0.1/v0.2
-            shared_float_256[index] += shared_float_256[index + step];  // v1
+            shared_float_256[index] += shared_float_256[index + step];  // v0.3
             __syncthreads();
         }
     }
@@ -87,7 +88,7 @@ int main() {
     cudaEventCreate(&start);
     cudaEventCreate(&stop);
     cudaEventRecord(start);
-    accumulator_v0<blockSize><<<Grid, Block>>>(din, dout);
+    accumulator_v1<blockSize><<<Grid, Block>>>(din, dout);
     cudaEventRecord(stop);
     cudaEventSynchronize(stop);
     cudaEventElapsedTime(&millisecond, start, stop);
