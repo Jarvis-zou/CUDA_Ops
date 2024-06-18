@@ -1,29 +1,8 @@
 #include "pch.cuh"
 #define N 25600000
 
-__device__ void warpReduceSync(float *input, unsigned int tid) {
-    float x = input[tid];
-    x += input[tid + 32]; __syncwarp();
-    input[tid] = x; __syncwarp();
-
-    x += input[tid + 16]; __syncwarp();
-    input[tid] = x; __syncwarp();
-
-    x += input[tid + 8]; __syncwarp();
-    input[tid] = x; __syncwarp();
-
-    x += input[tid + 4]; __syncwarp();
-    input[tid] = x; __syncwarp();
-
-    x += input[tid + 2]; __syncwarp();
-    input[tid] = x; __syncwarp();
-
-    x += input[tid + 1]; __syncwarp();
-    input[tid] = x; __syncwarp();
-}
-
 template<int blockSize>
-__global__ void accumulator_v4(const float *input, float *output) {
+__global__ void accumulator_v3(const float *input, float *output) {
     // Example for using shared memory, each block has individual shared memory space.
 
     /* In v2 each block processes 256 float data, each thread processes 2 float numbers, so in iter1, only 128 threads are working
@@ -32,28 +11,23 @@ __global__ void accumulator_v4(const float *input, float *output) {
      * Optimization object: let all threads working all the time.
      * Let each thread add block1 data and block2 data. Half idle threads now work.
      * */
-    __shared__ float shared_float_64[blockSize]; // init an array stores 128 float numbers on shared memory for blockSize(128) threads to use
+    __shared__ float shared_float_128[blockSize]; // init an array stores 128 float numbers on shared memory for blockSize(128) threads to use
     unsigned int tid = threadIdx.x;  // thread id in this block
     unsigned int global_tid = 4 * blockSize * blockIdx.x + threadIdx.x;  // thread id in global thread pool
-    shared_float_64[tid] = input[global_tid] +
-                           input[global_tid + blockSize] +
-                           input[global_tid + 2 * blockSize] +
-                           input[global_tid + 3 * blockSize]; // Changing loading data to an add operation for each thread, reduce 4x blockSize perform best
+    shared_float_128[tid] = input[global_tid] +
+                            input[global_tid + blockSize] +
+                            input[global_tid + 2 * blockSize] +
+                            input[global_tid + 3 * blockSize]; // Changing loading data to an add operation for each thread, reduce 4x blockSize perform best
     __syncthreads();
 
     // By reduce blockSize to blockSize / 2, actually we just reassigned the first iteration in v2 method to each thread, so in this v3
-    for (unsigned int index = blockDim.x / 2; index > 32; index >>= 1) { // when index = 32, in last warp
+    for (unsigned int index = blockDim.x / 2; index > 0; index >>= 1) {
         if (tid < index) {
-            shared_float_64[tid] += shared_float_64[tid + index];
+            shared_float_128[tid] += shared_float_128[tid + index];
         }
         __syncthreads();
     }
-
-    if (tid < 32) {
-        warpReduceSync(shared_float_64, tid);
-    }
-
-    if (tid == 0) output[blockIdx.x] = shared_float_64[0];
+    if (tid == 0) output[blockIdx.x] = shared_float_128[0];
 }
 
 void checkResults(const float *input, int size, float *groundTruth) {
@@ -116,7 +90,7 @@ int main() {
     cudaEventCreate(&start);
     cudaEventCreate(&stop);
     cudaEventRecord(start);
-    accumulator_v4<blockSize / 4><<<Grid, Block>>>(din, dout);
+    accumulator_v3<blockSize / 4><<<Grid, Block>>>(din, dout);
     cudaEventRecord(stop);
     cudaEventSynchronize(stop);
     cudaEventElapsedTime(&millisecond, start, stop);

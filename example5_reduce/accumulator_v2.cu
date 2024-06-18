@@ -31,7 +31,7 @@ __global__ void accumulator_v2(const float *input, float *output) {
     optimization effectively prevents this.
     */
     for (unsigned int index = blockDim.x / 2; index > 0; index >>= 1) {
-        /* iter1: warp0(row0) = row0 + row3, warp1(row1) = row1 + row4, warp2(row2) = row2 + row5, warp3(row3) = row3 + row7
+        /* iter1: warp0(row0) = row0 + row4, warp1(row1) = row1 + row5, warp2(row2) = row2 + row6, warp3(row3) = row3 + row7
          * iter2: warp0(row0) = row0 + row2, warp1(row1) = row1 + row3
          * iter3: warp0(row0) = row0 + row1
          * iter4: index = 16, for the next iteration, only row1 will be operated and (16/8/4/2/1 threads in warp0 will be used)*/
@@ -77,7 +77,7 @@ int main() {
     cudaGetDevice(&device);
     cudaGetDeviceProperties(&deviceProp, device);
     const int blockSize = 256;  // 256 threads/block
-    int gridSize = std::min((N / blockSize) + 1, deviceProp.maxGridSize[0]);  // total blocks need to process all data
+    int gridSize = std::min(((N + blockSize - 1) / blockSize), deviceProp.maxGridSize[0]);  // total blocks need to process all data
 
     // allocate CPU data memory
     hin = (float*)malloc(N * sizeof(float));

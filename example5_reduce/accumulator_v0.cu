@@ -56,7 +56,7 @@ int main() {
     cudaGetDevice(&device);
     cudaGetDeviceProperties(&deviceProp, device);
     const int blockSize = 256;  // 256 threads/block
-    int gridSize = std::min((N / blockSize) + 1, deviceProp.maxGridSize[0]);  // total blocks need to process all data
+    int gridSize = std::min(((N + blockSize - 1) / blockSize), deviceProp.maxGridSize[0]);  // total blocks need to process all data
 
     // allocate CPU data memory
     hin = (float*)malloc(N * sizeof(float));
