@@ -4,8 +4,8 @@
 
 #ifndef CUDA_PCH_CUH
 #define CUDA_PCH_CUH
-#include <cuda_runtime.h>
-#include <cuda.h>
+//#include <cuda_runtime.h>
+//#include <cuda.h>
 #include <iostream>
 #include <stdio.h>
 #endif //CUDA_PCH_CUH
