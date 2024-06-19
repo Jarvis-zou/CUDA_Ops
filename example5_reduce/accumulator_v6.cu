@@ -53,7 +53,7 @@ __device__ void warpReduce(float *input) {
 }
 
 template<int blockSize>
-__global__ void accumulator_v6(const float *input, float *output, int size) {
+__global__ void accumulator_v6(const float *input, float *output, int blockNum) {
     // Example for using shared memory, each block has individual shared memory space.
 
     /* Make kernel function can handle all data when gridSize is smaller than total number of float data
@@ -66,7 +66,7 @@ __global__ void accumulator_v6(const float *input, float *output, int size) {
 
     // first assign data to this block by adding additional data by steps
     float sum = 0.0f;
-    for (int32_t i = global_tid; i < size; i += steps) {
+    for (int32_t i = global_tid; i < blockNum; i += steps) {
         sum += input[i];
     }
     shared_float_256[tid] = sum;  // curr block handle pre-added data

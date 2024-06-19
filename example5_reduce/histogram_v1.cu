@@ -1,78 +1,109 @@
-#include <bits/stdc++.h>
-#include <cuda.h>
-#include "cuda_runtime.h"
-//2.386ms
-__global__ void histgram(int *hist_data, int *bin_data)
-{
-    int gtid = blockIdx.x * blockDim.x + threadIdx.x;
-    /*error*/
-    // bin_data[hist_data[gtid]]++;
-    /*right*/
-    // 原子加法，将所有并行线程强制转为串行，但不保证顺序
-    atomicAdd(&bin_data[hist_data[gtid]], 1);
+#include "pch.cuh"
+#include <random>
+#define N 25600000
+
+__global__ void histogram_v1(const unsigned int *hist_data, unsigned int *block_data, int data_size) {
+    // Using shared memory to store local data, avoid collision in global mem(ep: thread0(block0) and thread0(block1)
+    // need to do operations on same mem location in global memory) as possible as we can.
+    __shared__ unsigned int shared_mem[256];
+    unsigned int global_tid = blockIdx.x * blockDim.x + threadIdx.x;
+    unsigned int tid = threadIdx.x;
+    shared_mem[tid] = 0;
+    __syncthreads();
+
+    // if total number of threads is smaller than data size, we let some threads handle multiple data
+    for (unsigned int i = global_tid; i < data_size; i += gridDim.x * blockDim.x) {
+        atomicAdd(&shared_mem[hist_data[i]], 1);
+    }
+    __syncthreads();
+
+    atomicAdd(&block_data[global_tid], shared_mem[tid]);
 }
 
-bool CheckResult(int *out, int* groudtruth, int N){
-    for (int i = 0; i < N; i++){
-        if (out[i] != groudtruth[i]) {
+__global__ void histogram_block_sum(const unsigned int *block_data, unsigned int *bin_data) {
+    unsigned int global_tid = blockIdx.x * blockDim.x + threadIdx.x;
+    unsigned int tid = threadIdx.x;
+    atomicAdd(&bin_data[tid], block_data[global_tid]);
+}
+
+bool checkResults(const unsigned int *input, unsigned int *groundTruth, int size) {
+    for (int i = 0; i < size; i++){
+        if (input[i] != groundTruth[i]) {
+            printf("Check Failed, out[i]=%d, gt[i]=%d\n", input[i], groundTruth[i]);
             return false;
         }
     }
     return true;
 }
 
-int main(){
-    float milliseconds = 0;
-    const int N = 25600000;
-    int *hist = (int *)malloc(N * sizeof(int));
-    int *bin = (int *)malloc(256 * sizeof(int));
-    int *bin_data;
-    int *hist_data;
-    cudaMalloc((void **)&bin_data, 256 * sizeof(int));
-    cudaMalloc((void **)&hist_data, N * sizeof(int));
+int main() {
+    unsigned int *h_hist, *h_bin;
+    unsigned int *d_hist, *d_bin, *d_block;
 
-    for(int i = 0; i < N; i++){
-        hist[i] = i % 256;
+    // get device property and calculate block needed
+    cudaDeviceProp deviceProp{};
+    int device;
+    cudaGetDevice(&device);
+    cudaGetDeviceProperties(&deviceProp, device);
+    const int blockSize = 256;  // 256 threads/block
+    int gridSize = std::min(((N + blockSize - 1) / blockSize), deviceProp.maxGridSize[0]);  // keep gridSize because we are not reallocate data to block we are reallocate threads
+
+    // allocate CPU data memory
+    h_hist = (unsigned int*)malloc(N * sizeof(unsigned int));
+    h_bin = (unsigned int*)malloc(256 * sizeof(unsigned int));  // we only count numbers from 0 to 255
+
+    // init data
+    std::random_device rd;
+    std::mt19937 gen(rd());
+    std::vector<double> weights(blockSize, 1.0);
+    for (int i = 0; i < blockSize / 5; ++i) {
+        weights[i] = 5.0;
+    }
+    std::discrete_distribution<> dist(weights.begin(), weights.end());
+
+    unsigned int *groundTruth = (unsigned int*)calloc(256, sizeof(unsigned int));;
+    for (int i = 0; i < N; ++i) {
+        h_hist[i] = dist(gen);
+        groundTruth[h_hist[i]] += 1;
+    }
+    for (int i = 0; i < 256; i++) {
+        std::cout << i << ": " << groundTruth[i] << std::endl;
     }
 
-    int *groudtruth = (int *)malloc(256 * sizeof(int));;
-    for(int j = 0; j < 256; j++){
-        groudtruth[j] = 100000;
-    }
+    //allocate GPU memory
+    cudaMalloc((void**)&d_hist, N * sizeof(unsigned int));
+    cudaMalloc((void**)&d_block, N * sizeof(unsigned int));
+    cudaMalloc((void**)&d_bin, 256 * sizeof(unsigned int));
 
-    cudaMemcpy(hist_data, hist, N * sizeof(int), cudaMemcpyHostToDevice);
-    cudaSetDevice(0);
-    cudaDeviceProp deviceProp;
-    cudaGetDeviceProperties(&deviceProp, 0);
-    const int blockSize = 256;
-    int GridSize = std::min((N + 256 - 1) / 256, deviceProp.maxGridSize[0]);
-    dim3 Grid(GridSize);
-    dim3 Block(blockSize);
-    
+    // copy data to GPU
+    cudaMemcpy(d_hist, h_hist, N * sizeof(unsigned int), cudaMemcpyHostToDevice);
+
+    // call kernel function
+    dim3 Grid(gridSize);  // number of blocks
+    dim3 Block(blockSize);  // number of threads
+    float millisecond;
     cudaEvent_t start, stop;
     cudaEventCreate(&start);
     cudaEventCreate(&stop);
     cudaEventRecord(start);
-    histgram<<<Grid, Block>>>(hist_data, bin_data);
+    histogram_v1<<<Grid, Block>>>(d_hist, d_block, N);  // first get result of each block
+    histogram_block_sum<<<Grid, Block>>>(d_block,d_bin);
     cudaEventRecord(stop);
     cudaEventSynchronize(stop);
-    cudaEventElapsedTime(&milliseconds, start, stop);
+    cudaEventElapsedTime(&millisecond, start, stop);
 
-    cudaMemcpy(bin, bin_data, 256 * sizeof(int), cudaMemcpyDeviceToHost);
-    bool is_right = CheckResult(bin, groudtruth, 256);
-    if(is_right) {
-        printf("the ans is right\n");
-    } else {
-        printf("the ans is wrong\n");
-        for(int i = 0; i < 256; i++){
-            printf("%lf ", bin[i]);
-        }
-        printf("\n");
-    }
-    printf("histogram latency = %f ms\n", milliseconds);    
+    // copy GPU result to CPU
+    cudaMemcpy(h_bin, d_bin, 256 * sizeof(int), cudaMemcpyDeviceToHost);
+    std::cout << "Time Spent: " << millisecond << "ms." << std::endl;
 
-    cudaFree(bin_data);
-    cudaFree(hist_data);
-    free(bin);
-    free(hist);
+    // Check Result
+    checkResults(h_bin, groundTruth, 256);
+
+    // free resource
+    cudaFree(d_hist);
+    cudaFree(d_bin);
+
+    free(h_hist);
+    free(h_bin);
+    free(groundTruth);
 }
