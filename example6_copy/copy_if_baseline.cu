@@ -2,27 +2,11 @@
 #include <random>
 #define N 25600000
 
-__device__ int atomicAggInc(unsigned int *ctr) {
-    unsigned int active = __activemask();
-    int leader = __ffs(active) - 1; // leader thread will handle operations on global mem
-    int change = __popc(active);// how many threads are active, which means how many value in this warp > 0
-    int lane_mask_lt;
-    asm("mov.u32 %0, %%lanemask_lt;" : "=r"(lane_mask_lt));
-    unsigned int rank = __popc(active & lane_mask_lt); // same logic as block
-    int warp_res;
-    if(rank == 0)  // only leader thread do add operation
-        warp_res = atomicAdd(ctr, change);  //compute global offset of warp
-    warp_res = __shfl_sync(active, warp_res, leader);  // broadcast warp_res of leader thread to every active thread
-    return warp_res + rank;
-}
-
-__global__ void copy_if_v2(const unsigned int *input, unsigned int *dst, unsigned int *global_NCopy, const unsigned int data_size) {
-    // Warp-level optimization, divide task in each block into warp-level, reduce more collision on same global memory space
-    int global_tid = threadIdx.x + blockIdx.x * blockDim.x;
-    if(global_tid >= data_size)
-        return;
-    if(input[global_tid] > 0)
-        dst[atomicAggInc(global_NCopy)] = input[global_tid];
+__global__ void copy_if_baseline(const unsigned int *input, unsigned int *dst, unsigned int *NCopy, const unsigned int data_size) {
+    const unsigned int global_tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (global_tid < data_size && input[global_tid] > 0) {
+        dst[atomicAdd(NCopy, 1)] = input[global_tid];
+    }
 }
 
 
@@ -87,7 +71,7 @@ int main() {
     cudaEventCreate(&start);
     cudaEventCreate(&stop);
     cudaEventRecord(start);
-    copy_if_v2<<<Grid, Block>>>(d_in, d_dst, d_NCopy, N);
+    copy_if_baseline<<<Grid, Block>>>(d_in, d_dst, d_NCopy, N);
     cudaEventRecord(stop);
     cudaEventSynchronize(stop);
     cudaEventElapsedTime(&millisecond, start, stop);

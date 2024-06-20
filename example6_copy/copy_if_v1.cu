@@ -2,27 +2,33 @@
 #include <random>
 #define N 25600000
 
-__device__ int atomicAggInc(unsigned int *ctr) {
-    unsigned int active = __activemask();
-    int leader = __ffs(active) - 1; // leader thread will handle operations on global mem
-    int change = __popc(active);// how many threads are active, which means how many value in this warp > 0
-    int lane_mask_lt;
-    asm("mov.u32 %0, %%lanemask_lt;" : "=r"(lane_mask_lt));
-    unsigned int rank = __popc(active & lane_mask_lt); // same logic as block
-    int warp_res;
-    if(rank == 0)  // only leader thread do add operation
-        warp_res = atomicAdd(ctr, change);  //compute global offset of warp
-    warp_res = __shfl_sync(active, warp_res, leader);  // broadcast warp_res of leader thread to every active thread
-    return warp_res + rank;
-}
+__global__ void copy_if_v1(const unsigned int *input, unsigned int *dst, unsigned int *global_NCopy, const unsigned int data_size) {
+    // Keep data in blocks and count numbers of value copied inside each block then choose one thread to add it on index
+    // This method reduces collision between all threads to block-level when operating the same global memory space
+    __shared__ int block_NCopy;
+    const unsigned int global_tid = blockIdx.x * blockDim.x + threadIdx.x;
+    const unsigned int tid = threadIdx.x;
+    const unsigned int total_threads = gridDim.x * blockDim.x;
 
-__global__ void copy_if_v2(const unsigned int *input, unsigned int *dst, unsigned int *global_NCopy, const unsigned int data_size) {
-    // Warp-level optimization, divide task in each block into warp-level, reduce more collision on same global memory space
-    int global_tid = threadIdx.x + blockIdx.x * blockDim.x;
-    if(global_tid >= data_size)
-        return;
-    if(input[global_tid] > 0)
-        dst[atomicAggInc(global_NCopy)] = input[global_tid];
+    // In case total threads < data_size
+    for (unsigned int i = global_tid; i < data_size; i += total_threads) {
+        if (tid == 0) block_NCopy = 0; __syncthreads(); // use only one thread to init counter
+
+        unsigned int value = input[i], block_index;  // block_index is where curr thread should put value in dst when value > 0
+        if (i < data_size && value > 0) {
+            block_index = atomicAdd(&block_NCopy, 1); // ep: when tid=0, value > 0, now block_NCopy = 1 and block_index = 0
+        }
+        __syncthreads();
+
+        // block_NCopy now is the total number copied inside this block, we let local thread0 to add this on index
+        if (tid == 0) block_NCopy = atomicAdd(global_NCopy, block_NCopy); __syncthreads();
+
+        // block_NCopy = number of copied value before this block now
+        if(i < data_size && value > 0) {
+            block_index += block_NCopy;  // block_index = global index now
+            dst[block_index] = value;  // set value to the right index
+        }
+    }
 }
 
 
@@ -87,7 +93,7 @@ int main() {
     cudaEventCreate(&start);
     cudaEventCreate(&stop);
     cudaEventRecord(start);
-    copy_if_v2<<<Grid, Block>>>(d_in, d_dst, d_NCopy, N);
+    copy_if_v1<<<Grid, Block>>>(d_in, d_dst, d_NCopy, N);
     cudaEventRecord(stop);
     cudaEventSynchronize(stop);
     cudaEventElapsedTime(&millisecond, start, stop);

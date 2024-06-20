@@ -2,6 +2,7 @@
 #include <random>
 #define N 25600000
 
+// This warp-level perform same as baseline, both slower than block-level(v1) method 20%
 __device__ int atomicAggInc(unsigned int *ctr) {
     unsigned int active = __activemask();
     int leader = __ffs(active) - 1; // leader thread will handle operations on global mem
@@ -87,7 +88,7 @@ int main() {
     cudaEventCreate(&start);
     cudaEventCreate(&stop);
     cudaEventRecord(start);
-    copy_if_v2<<<Grid, Block>>>(d_in, d_dst, d_NCopy, N);
+    copy_if_v1<<<Grid, Block>>>(d_in, d_dst, d_NCopy, N);
     cudaEventRecord(stop);
     cudaEventSynchronize(stop);
     cudaEventElapsedTime(&millisecond, start, stop);
