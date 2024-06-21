@@ -5,12 +5,12 @@ template <int Size>
 // if we don't set alignas(sizeof(__half) * Size), alignof() will return 2 bytes
 // we explicitly set alignof this struct as 8 half(16 bytes), so we must load 8 half values each time
 struct alignas(sizeof(__half) * Size) AlignedVectorHalf {
-    // This struct has a T * Size alignment in space
-    __half data[Size];
+// This struct has a T * Size alignment in space
+__half data[Size];
 
-    // Overload[] for user-friendly call
-    __host__ __device__ inline const __half& operator[](int i) const { return data[i]; }  // This won't be used (No const members)
-    __host__ __device__ inline __half& operator[](int i) { return data[i]; }
+// Overload[] for user-friendly call
+__host__ __device__ inline const __half& operator[](int i) const { return data[i]; }  // This won't be used (No const members)
+__host__ __device__ inline __half& operator[](int i) { return data[i]; }
 };
 
 __device__ void gelu_forward(__half *address, __half *dst){
