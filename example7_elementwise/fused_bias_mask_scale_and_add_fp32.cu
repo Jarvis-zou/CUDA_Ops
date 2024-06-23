@@ -1,5 +1,5 @@
 #include "pch.cuh"
-#define N 4
+#define N 25600000
 
 template<int size>
 struct alignas(sizeof(float) * size) AlignedVectorFloat {
@@ -13,27 +13,35 @@ __host__ __device__ inline float& operator[](int i) { return data[i]; }
 
 template<typename T>
 struct BiasMaskScaleAddFunctor {
-    const T *bias;
+    T *bias;
     const int biasSize;
-    uint32_t *mask;
+    T *mask;
     const T scale;
     T *add;
 
     // Init members
-    BiasMaskScaleAddFunctor(const float* bias, const int biasSize, uint32_t *mask, const float scale, float *add)
+    BiasMaskScaleAddFunctor(T* bias, const int biasSize, T *mask, const float scale, T *add)
             : bias(bias), biasSize(biasSize), mask(mask), scale(scale), add(add) {}
 
     __device__ void compute(T *address, T *dst, int idx) {
-        float4 x = *reinterpret_cast<const float4*>(address); // x contains 4 float values
-        int4 mask4 = *reinterpret_cast<const int4*>(mask);
-        float4 add4 = *reinterpret_cast<const float4*>(add);
+        auto xfp4 = reinterpret_cast<const float4*>(address); // x contains 4 float values
+        auto bias4 = reinterpret_cast<const float4*>(bias);
+        auto mask4 = reinterpret_cast<const float4*>(mask);
+        auto add4 = reinterpret_cast<const float4*>(add);
+        float4 res;
+//        printf("G_TID: %d\n", idx);
+//        printf("xfp4[idx].x=%f, xfp4[idx].y=%f, xfp4[idx].z=%f, xfp4[idx].w=%f\n", xfp4[idx].x, xfp4[idx].y, xfp4[idx].z, xfp4[idx].w);
+//        printf("bias4[idx].x=%f, bias4[idx].y=%f, bias4[idx].z=%f, bias4[idx].w=%f\n", bias4[idx].x, bias4[idx].y, bias4[idx].z, bias4[idx].w);
+//        printf("mask4[idx].x=%f, mask4[idx].y=%f, mask4[idx].z=%f, mask4[idx].w=%f\n", mask4[idx].x, mask4[idx].y, mask4[idx].z, mask4[idx].w);
+//        printf("add4[idx].x=%f, add4[idx].y=%f, add4[idx].z=%f, add4[idx].w=%f\n", add4[idx].x, add4[idx].y, add4[idx].z, add4[idx].w);
 
-        x.x = __fadd_rn(__fmul_rn(__fmul_rn(__fadd_rn(x.x, bias[idx % biasSize]), mask4.x), scale), add4.x);
-        x.y = __fadd_rn(__fmul_rn(__fmul_rn(__fadd_rn(x.y, bias[(idx + 1) % biasSize]), mask4.y), scale), add4.y);
-        x.z = __fadd_rn(__fmul_rn(__fmul_rn(__fadd_rn(x.z, bias[(idx + 2) % biasSize]), mask4.z), scale), add4.z);
-        x.w = __fadd_rn(__fmul_rn(__fmul_rn(__fadd_rn(x.w, bias[(idx + 3) % biasSize]), mask4.w), scale), add4.w);
 
-        *reinterpret_cast<float4*>(dst) = x;
+        res.x = __fadd_rn(__fmul_rn(__fmul_rn(__fadd_rn(xfp4[idx].x, bias4[idx].x), mask4[idx].x), scale), add4[idx].x);
+        res.y = __fadd_rn(__fmul_rn(__fmul_rn(__fadd_rn(xfp4[idx].y, bias4[idx].y), mask4[idx].y), scale), add4[idx].y);
+        res.z = __fadd_rn(__fmul_rn(__fmul_rn(__fadd_rn(xfp4[idx].z, bias4[idx].z), mask4[idx].z), scale), add4[idx].z);
+        res.w = __fadd_rn(__fmul_rn(__fmul_rn(__fadd_rn(xfp4[idx].w, bias4[idx].w), mask4[idx].w), scale), add4[idx].w);
+
+        *reinterpret_cast<float4*>(dst) = res;
     }
 };
 
@@ -44,11 +52,11 @@ __global__ void FusedBiasMaskScaleAddKernel(Functor functor, T *x, T *y) {
 
     // In case number of threads < total size of data
     for (; global_tid < N; global_tid += stride) {
-        functor.compute(x + global_tid, y + global_tid, global_tid);
+        functor.compute(x, y + global_tid, global_tid / vectorSize);
     }
 }
 
-void FusedBiasMaskScaleAdd_CPU(const float *x, const float* bias, const int biasSize, const uint32_t *mask, const float scale, const float *add, float *y) {
+void FusedBiasMaskScaleAdd_CPU(const float *x, const float* bias, const int biasSize, const float *mask, const float scale, const float *add, float *y) {
     for (auto i = 0; i < N; i++) {
         y[i] = (x[i] + bias[i % biasSize]) * static_cast<float>(mask[i]) * scale + add[i];
     }
@@ -57,6 +65,7 @@ void FusedBiasMaskScaleAdd_CPU(const float *x, const float* bias, const int bias
 bool checkResults(const float *res_cpu, const float *res_gpu) {
     for (unsigned int i = 0 ; i < N; i++) {
         if (res_cpu[i] != res_gpu[i]) {
+            std::cout << "Index:" << i << std::endl;
             std::cout << "Check Failed: res=" << res_gpu[i] << " Ground Truth=" << res_cpu[i] << std::endl;
             return false;
         }
@@ -70,7 +79,7 @@ int main() {
 
     float scale = 0.5f;
     float biasSize = 10; // recurrently apply 10 bias to all x
-    uint32_t *h_mask, *d_mask;
+    float *h_mask, *d_mask;
     float *h_bias, *d_bias;
     float *h_add, *d_add;
 
@@ -78,32 +87,32 @@ int main() {
     hx = (float*)malloc(N * sizeof(float));
     hy = (float*)malloc(N * sizeof(float));
     hy_cpu = (float*)malloc(N * sizeof(float));
-    h_bias = (float*)malloc(biasSize * sizeof(float));
-    h_mask = (uint32_t*)malloc(N * sizeof(uint32_t));
+    h_bias = (float*)malloc(N * sizeof(float));
+    h_mask = (float*)malloc(N * sizeof(float));
     h_add = (float*)malloc(N * sizeof(float));
 
     // Init data
-    for (auto i = 0; i < biasSize; i++) {
-        h_bias[i] = static_cast<float>(i);
+    for (auto i = 0; i < N; i++) {
+        h_bias[i] = static_cast<float>(i % 10);
     }
     for (auto i = 0; i < N; i++) {
         hx[i] = static_cast<float>(i);
-        h_mask[i] = static_cast<uint32_t>(i % 2);  // 010101...
+        h_mask[i] = static_cast<float>(i % 2);  // 010101...
         h_add[i] = static_cast<float>(i);
     }
 
 
     // Allocate GPU memory
     cudaMalloc((void**)&dx, N * sizeof(float));
-    cudaMalloc((void**)&d_bias, biasSize * sizeof(float));
-    cudaMalloc((void**)&d_mask, N * sizeof(uint32_t));
+    cudaMalloc((void**)&d_bias, N * sizeof(float));
+    cudaMalloc((void**)&d_mask, N * sizeof(float));
     cudaMalloc((void**)&d_add, N * sizeof(float));
     cudaMalloc((void**)&dy, N * sizeof(float));
 
     // Convert float input to half input
     cudaMemcpy(dx, hx, N * sizeof(float), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_bias, h_bias, biasSize * sizeof(float), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_mask, h_mask, N * sizeof(uint32_t), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_bias, h_bias, N * sizeof(float), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_mask, h_mask, N * sizeof(float), cudaMemcpyHostToDevice);
     cudaMemcpy(d_add, h_add, N * sizeof(float), cudaMemcpyHostToDevice);
 
     // Get device property and calculate block needed
@@ -112,7 +121,7 @@ int main() {
     cudaGetDevice(&device);
     cudaGetDeviceProperties(&deviceProp, device);
     const int blockSize = 1024;  // max threads per block
-    const int gridSize = (N + blockSize - 1) / blockSize;
+    const int gridSize = (N / 4 + blockSize - 1) / blockSize;
 
     // Check if the memory is aligned
     auto is_aligned = [](const void *p, const int alignment) {
@@ -123,14 +132,14 @@ int main() {
     float millisecond = 0.0f;
     constexpr auto vectorAlignmentFloat = alignof(AlignedVectorFloat<4>);
     if (N % 4 == 0 && is_aligned(dx, vectorAlignmentFloat) && is_aligned(dy, vectorAlignmentFloat)) {
-        dim3 Grid(gridSize / 4);  // number of blocks
+        dim3 Grid(gridSize);  // number of blocks
         dim3 Block(blockSize);  // number of threads
         cudaEvent_t start, stop;
         cudaEventCreate(&start);
         cudaEventCreate(&stop);
         cudaEventRecord(start);
         auto fused_func = BiasMaskScaleAddFunctor<float>(d_bias, biasSize, d_mask, scale, d_add);
-        FusedBiasMaskScaleAddKernel<BiasMaskScaleAddFunctor<float>, float, 4><<<1, 1>>>(fused_func, dx, dy);
+        FusedBiasMaskScaleAddKernel<BiasMaskScaleAddFunctor<float>, float, 4><<<Grid, Block>>>(fused_func, dx, dy);
         cudaEventRecord(stop);
         cudaEventSynchronize(stop);
         cudaEventElapsedTime(&millisecond, start, stop);

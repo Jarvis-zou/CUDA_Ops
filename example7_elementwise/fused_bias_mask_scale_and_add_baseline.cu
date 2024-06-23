@@ -1,5 +1,5 @@
 #include "pch.cuh"
-#define N 25600000
+#define N 256000000
 
 template<typename T>
 struct BiasMaskScaleAddFunctor {
@@ -14,6 +14,7 @@ struct BiasMaskScaleAddFunctor {
             : bias(bias), biasSize(biasSize), mask(mask), scale(scale), add(add) {}
 
     __device__ T compute(T *x, unsigned int idx) {
+//        return __fadd_rn(__fmul_rn(__fmul_rn(__fadd_rn(x[idx], bias[idx % biasSize]), static_cast<float>(mask[idx])), scale), add[idx]);
         return (x[idx] + bias[idx % biasSize]) * static_cast<float>(mask[idx]) * scale + add[idx];
     }
 

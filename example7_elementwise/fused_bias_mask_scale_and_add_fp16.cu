@@ -1,117 +1,150 @@
-#include <cuda.h>
-#include <cuda_fp16.h>
-#include "cuda_runtime.h"
-typedef __half half;
-typedef __half2 half2;
-// 注意
-// 1. 此融合算子还比较简单，主要融合了几个element wise算子，在L15和L39，把各个子算子的输出保留在寄存器直接喂给下一个算子做计算，而无需中途写回显存
-// 2. 下个版本会新增fusedDropout这个稍微复杂点的融合算子，来进一步体会融合算子的开发方法，总的来说，和本节融合算子的思想一样
+#include "pch.cuh"
+#define N 25600000
+
+template<typename T, int size>
+struct alignas(sizeof(T) * size) AlignedVectorHalf {
+// This struct has a T * Size alignment in space
+float data[size];
+
+// Overload[] for user-friendly call
+__host__ __device__ inline const T& operator[](int i) const { return data[i]; }  // This won't be used (No const members)
+__host__ __device__ inline T& operator[](int i) { return data[i]; }
+};
+
 template<typename T>
-struct MaskScaleAndElementwiseAddFunctor {
-  MaskScaleAndElementwiseAddFunctor(const uint8_t* mask, const T* add_val, float scale)
-      : mask(mask), add_val(add_val), scale(scale) {}
-  __device__ T Compute(T x, int64_t i) const {
-    // mask和scale先做计算，然后结果再和x做计算，最后element wise相加
-    return x * static_cast<T>(static_cast<bool>(mask[i]) * scale) + add_val[i]; 
-  }
-  const uint8_t* mask;
-  const T* add_val;
-  float scale;
+struct BiasMaskScaleAddFunctor {
+    const T *bias;
+    const int biasSize;
+    const T *mask;
+    const T scale;
+    const T *add;
+
+    // Init members
+    BiasMaskScaleAddFunctor(T* bias, const int biasSize, T *mask, const T scale, T *add)
+            : bias(bias), biasSize(biasSize), mask(mask), scale(scale), add(add) {}
+
+    __device__ void compute(T *address, T *dst, int idx) {
+        auto x = *reinterpret_cast<const half2*>(address); // x contains 2 fp16 values
+        auto bias2 = *reinterpret_cast<const half2*>(bias+idx);
+        auto mask2 = *reinterpret_cast<const half2*>(mask+idx);
+        auto scale2 = __float2half2_rn(scale);
+        auto add2 = *reinterpret_cast<const half2*>(add+idx);
+//        printf("G_TID: %d\n", idx);
+//        printf("x[idx].x=%f, x[idx].y=%f\n", __half2float(x.x), __half2float(x.y));
+//        printf("bias2[idx].x=%f, bias2[idx].y=%f\n", __half2float(bias2.x), __half2float(bias2.y));
+//        printf("mask2[idx].x=%f, mask2[idx].y=%f\n", __half2float(mask2.x), __half2float(mask2.y));
+//        printf("add2[idx].x=%f, add2[idx].y=%f\n", __half2float(add2.x), __half2float(add2.y));
+
+        const half2 res = __hadd2(__hmul2(__hmul2(__hadd2(x, bias2), mask2), scale2), add2);
+//        printf("res[idx].x=%f, res[idx].y=%f\n", __half2float(res.x), __half2float(res.y));
+
+        *reinterpret_cast<half2*>(dst) = res;
+    }
 };
 
-template<>
-struct MaskScaleAndElementwiseAddFunctor<half> {
-  MaskScaleAndElementwiseAddFunctor(const uint8_t* mask, const half* add_val, float scale)
-      : mask(mask), add_val(add_val), scale(scale) {}
-  // half标量版本的MaskScaleAndElementwiseAdd，与L15区别不大，注意: 有的GPU在有的nvcc和cuda版本下，没有重载half*half的直接相乘版本，此时需要用hmul(half,half)来代替或者两个half强转为fp32来相乘再转回half,比如(half)((float)x * (float)y)
-  __device__ half Compute(half x, int64_t i) const {
-    return x * static_cast<half>(static_cast<bool>(mask[i]) * scale) + add_val[i];
-  }
-  // half向量版本的MaskScaleAndElementwiseAdd，不仅支持L32和L33所示的向量化读取，也支持L39所示的向量化计算，这与fp32的向量化是不同的，具体接口可以搜索cuda math api文档
-  __device__ half2 ComputeHalf2(half2 x, int64_t i) const {
-    const char2* mask_c2 = reinterpret_cast<const char2*>(mask);
-    const half2* add_val_h2 = reinterpret_cast<const half2*>(add_val);
-    char2 mask_val = mask_c2[i]; // 向量化读取
-    half2 one_or_zero_h2; // 向量化读取
-    half2 h2_scale = __float2half2_rn(scale); // float->half2, ep. 1.0 => (1.0, 1.0)
-    one_or_zero_h2.x = mask_val.x;
-    one_or_zero_h2.y = mask_val.y;
-    return __hadd2(__hmul2(__hmul2(x, one_or_zero_h2), h2_scale), add_val_h2[i]);
-  }
-  const uint8_t* mask;
-  const half* add_val;
-  float scale;
-};
+template<typename Functor, typename T, int vectorSize>
+__global__ void FusedBiasMaskScaleAddKernel(Functor functor, T *x, T *y) {
+    unsigned int global_tid = (blockDim.x * blockIdx.x + threadIdx.x) * vectorSize;
+    unsigned int stride = (gridDim.x * blockDim.x) * vectorSize;
 
-// biasAdd的输入两个，x.shape={rows, cols}, bias.shape={cols}, 所以需要在L59通过除余循环读取这cols个bias
-template<typename FUNCTOR>
-__global__ void FusedBiasAddCUDAKernelHalf2(FUNCTOR functor, const int elem_cnt,
-                                        const int bias_size, const half* x, const half* bias,
-                                        half* y) {
-  const int h2_elem_cnt = elem_cnt / 2; // 读取的粒度由half变成了half2，那自然元素数量就少了一半
-  const int h2_bias_size = bias_size / 2;
-  const auto* x_h2 = reinterpret_cast<const half2*>(x); // 强转为向量指针后在L58读取
-  const auto* bias_h2 = reinterpret_cast<const half2*>(bias);
-  auto* y_h2 = reinterpret_cast<half2*>(y);
-  // 保证有限线程数处理完所有数据
-  for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < h2_elem_cnt;
-       i += blockDim.x * gridDim.x){
-    half2 x_i = __hadd2(x_h2[i], bias_h2[i % h2_bias_size]); // 
-    y_h2[i] = functor.ComputeHalf2(x_i, i);
-  }
+    // In case number of threads < total size of data
+    for (; global_tid < N; global_tid += stride) {
+        for (int i = 0; i < vectorSize; i += 2) {
+            functor.compute(x + global_tid + i, y + global_tid, global_tid + i);
+        }
+    }
 }
 
-int main(){
-    constexpr int ele_cnt = 1000;
-    float scale = 0.5;
-    uint8_t* mask_tensor = new uint8_t[ele_cnt];
-    __half* add_val = new __half[ele_cnt];
-    for (int i = 0; i < ele_cnt; i++){
-        mask_tensor[i] = (uint8_t)(i);
-        add_val[i] = (float)(i);
-    }
-    int bias_size = 10;
- 
-    __half *x = (__half*) malloc(sizeof(__half) * ele_cnt);
-    __half *y = (__half*) malloc(sizeof(__half) * ele_cnt);
-    __half *bias = (__half*) malloc(sizeof(__half) * bias_size);
-    for (int i = 0; i < ele_cnt; i++)
-    {
-      x[i] = (__half)(i);
-    }
-    __half *d_x, *d_y, *d_bias;
-    cudaMalloc((void **)&d_x, ele_cnt * sizeof(__half));
-    cudaMalloc((void **)&d_y, ele_cnt * sizeof(__half));
-    cudaMalloc((void **)&d_bias, bias_size * sizeof(__half));
-    cudaMemcpy(d_x, x, sizeof(__half) * ele_cnt, cudaMemcpyHostToDevice);
-    cudaMemcpy(d_y, y, sizeof(__half) * ele_cnt, cudaMemcpyHostToDevice);
-    cudaMemcpy(d_bias, bias, sizeof(__half) * bias_size, cudaMemcpyHostToDevice);
-    uint8_t *d_mask_tensor;
-    __half *d_add_val;
-    cudaMalloc((void **)&d_mask_tensor, ele_cnt * sizeof(uint8_t));
-    cudaMalloc((void **)&d_add_val, ele_cnt * sizeof(__half));
-    cudaMemcpy(d_mask_tensor, mask_tensor, sizeof(uint8_t) * ele_cnt, cudaMemcpyHostToDevice);
-    cudaMemcpy(d_add_val, add_val, sizeof(__half) * ele_cnt, cudaMemcpyHostToDevice);
 
-    cudaDeviceProp deviceProp;
-    cudaGetDeviceProperties(&deviceProp, 0);
-    int maxblocks = deviceProp.maxGridSize[0];
-    int blockSize = 256;
-    int gridSize = std::min((ele_cnt + blockSize - 1) / blockSize, maxblocks);
-    MaskScaleAndElementwiseAddFunctor<half> mask_scale_elementwise_add_func(mask_tensor, add_val, scale);
-    FusedBiasAddCUDAKernelHalf2<<<gridSize ,blockSize>>>(mask_scale_elementwise_add_func, ele_cnt, bias_size, d_x, d_bias, d_y);
-    cudaMemcpy(y, d_y, sizeof(__half) * ele_cnt, cudaMemcpyDeviceToHost);
-    
-    free(x);
-    free(y);
-    free(bias);
-    delete add_val;
-    add_val = nullptr;
-    delete mask_tensor;
-    mask_tensor = nullptr;
-    cudaFree(d_x);
-    cudaFree(d_y);
+int main() {
+    half *hx, *hy;
+    half *dx, *dy;
+
+    float scale = 0.5f;
+    int biasSize = 10; // recurrently apply 10 bias to all x
+    half *h_mask, *d_mask;
+    half *h_bias, *d_bias;
+    half *h_add, *d_add;
+
+    // Allocate CPU memory
+    hx = (half*)malloc(N * sizeof(half));
+    hy = (half*)malloc(N * sizeof(half));
+    h_bias = (half*)malloc(N * sizeof(half));
+    h_mask = (half*)malloc(N * sizeof(half));
+    h_add = (half*)malloc(N * sizeof(half));
+
+    // Init data
+    for (auto i = 0; i < N; i++) {
+        h_bias[i] = static_cast<half>(i % 10);
+    }
+    for (auto i = 0; i < N; i++) {
+        hx[i] = static_cast<half>(i);
+        h_mask[i] = static_cast<half>(i % 2);  // 010101...
+        h_add[i] = static_cast<half>(i);
+    }
+
+
+    // Allocate GPU memory
+    cudaMalloc((void**)&dx, N * sizeof(half));
+    cudaMalloc((void**)&d_bias, N * sizeof(half));
+    cudaMalloc((void**)&d_mask, N * sizeof(half));
+    cudaMalloc((void**)&d_add, N * sizeof(half));
+    cudaMalloc((void**)&dy, N * sizeof(half));
+
+    // Convert float input to half input
+    cudaMemcpy(dx, hx, N * sizeof(half), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_bias, h_bias, N * sizeof(half), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_mask, h_mask, N * sizeof(half), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_add, h_add, N * sizeof(half), cudaMemcpyHostToDevice);
+
+    // Get device property and calculate block needed
+    cudaDeviceProp deviceProp{};
+    int device;
+    cudaGetDevice(&device);
+    cudaGetDeviceProperties(&deviceProp, device);
+    const int blockSize = 1024;  // max threads per block
+    const int gridSize = (N / 8 + blockSize - 1) / blockSize;
+
+    // Check if the memory is aligned
+    auto is_aligned = [](const void *p, const int alignment) {
+        return reinterpret_cast<uintptr_t>(p) % alignment == 0;
+    };
+
+    // Call kernel function
+    float millisecond = 0.0f;
+    constexpr auto vectorAlignmentHalf = alignof(AlignedVectorHalf<half, 8>);
+    if (N % 8 == 0 && is_aligned(dx, vectorAlignmentHalf) && is_aligned(dy, vectorAlignmentHalf)) {
+        dim3 Grid(gridSize);  // number of blocks
+        dim3 Block(blockSize);  // number of threads
+        cudaEvent_t start, stop;
+        cudaEventCreate(&start);
+        cudaEventCreate(&stop);
+        cudaEventRecord(start);
+        auto fused_func = BiasMaskScaleAddFunctor<half>(d_bias, biasSize, d_mask, scale, d_add);
+        FusedBiasMaskScaleAddKernel<BiasMaskScaleAddFunctor<half>, half,8><<<Grid, Block>>>(fused_func, dx, dy);
+        cudaEventRecord(stop);
+        cudaEventSynchronize(stop);
+        cudaEventElapsedTime(&millisecond, start, stop);
+    }
+
+
+    // Copy GPU result to CPU
+    cudaMemcpy(hy, dy, N * sizeof(half), cudaMemcpyDeviceToHost);
+    std::cout << "Time Spent: " << millisecond << "ms." << std::endl;
+
+
+    // Free resources
+    cudaFree(dx);
     cudaFree(d_bias);
-    cudaFree(d_mask_tensor);
-    cudaFree(d_add_val);
+    cudaFree(d_mask);
+    cudaFree(d_add);
+    cudaFree(dy);
+
+    free(hx);
+    free(hy);
+    free(h_bias);
+    free(h_mask);
+    free(h_add);
+
+    return 0;
 }
