@@ -5,12 +5,12 @@ template <int Size>
 // if we don't set alignas(sizeof(__half) * Size), alignof() will return 2 bytes
 // we explicitly set alignof this struct as 8 half(16 bytes), so we must load 8 half values each time
 struct alignas(sizeof(__half) * Size) AlignedVectorHalf {
-// This struct has a T * Size alignment in space
-__half data[Size];
+    // This struct has a T * Size alignment in space
+    __half data[Size];
 
-// Overload[] for user-friendly call
-__host__ __device__ inline const __half& operator[](int i) const { return data[i]; }  // This won't be used (No const members)
-__host__ __device__ inline __half& operator[](int i) { return data[i]; }
+    // Overload[] for user-friendly call
+    __host__ __device__ inline const __half& operator[](int i) const { return data[i]; }  // This won't be used (No const members)
+    __host__ __device__ inline __half& operator[](int i) { return data[i]; }
 };
 
 __device__ void gelu_forward(__half *address, __half *dst){
@@ -37,7 +37,7 @@ __global__ void GeluFP16(__half *input, __half *output, const unsigned int data_
      * at the same time, so we only need to do 4 times operations and N/8 read & write */
     //global_tid * vectorSize, result will write into this global address in output for this thread
     unsigned int global_offset = (threadIdx.x + blockIdx.x * blockDim.x) * vectorSize;
-    unsigned int stride = (blockDim.x * blockDim.x) * vectorSize;
+    unsigned int stride = (blockDim.x * gridDim.x) * vectorSize;
 
     // In case number of threads < data size, assign overflow data to some threads
     for (; global_offset < data_size; global_offset += stride) {

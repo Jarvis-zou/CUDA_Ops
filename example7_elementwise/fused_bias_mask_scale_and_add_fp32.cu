@@ -4,11 +4,11 @@
 template<int size>
 struct alignas(sizeof(float) * size) AlignedVectorFloat {
 // This struct has a T * Size alignment in space
-    float data[size];
+float data[size];
 
 // Overload[] for user-friendly call
-    __host__ __device__ inline const float& operator[](int i) const { return data[i]; }  // This won't be used (No const members)
-    __host__ __device__ inline float& operator[](int i) { return data[i]; }
+__host__ __device__ inline const float& operator[](int i) const { return data[i]; }  // This won't be used (No const members)
+__host__ __device__ inline float& operator[](int i) { return data[i]; }
 };
 
 template<typename T>
