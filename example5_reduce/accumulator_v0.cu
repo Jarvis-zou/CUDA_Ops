@@ -14,7 +14,7 @@ __global__ void accumulator_v0(const float *input, float *output) {
     // Second step = 2, first round of results have been stored at tid [0, 2, 4, ..., 254], then add [(0,2), (4,6), ..., (252, 254)], stored at [0, 4, 8, ..., 252]
     // keep iteration till all data added and stored at
     for (int step = 1; step < blockDim.x; step *= 2) {
-        if (tid & (2 * step - 1) == 0) {
+        if (tid & (2 * step - 1) == 0) {  // tid % (2 * steps) == 0
             shared_float_256[tid] += shared_float_256[tid + step];
             __syncthreads();
         }
