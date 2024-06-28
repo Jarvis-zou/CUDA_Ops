@@ -2,7 +2,7 @@
 template<typename T>
 __device__ __forceinline__ T WarpReduce(T val) {
     for (int offset = warpSize / 2; offset > 0; offset /= 2) {
-        val += __shfl_down_sync(0xffffffff, val, offset);  // accumulator reduce
+        val += __shfl_down_sync(0xffffffff, val, offset);  // accumulator reduce 
     }
     return val;
 }
