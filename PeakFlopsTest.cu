@@ -10,7 +10,7 @@ __global__ void FP32FLOPS(int* start, int* stop, float* x, float* y, float* resu
     int start_time = 0;
     // only measure the computation time, eliminate the memory access time
     asm volatile ("mov.u32 %0, %%clock;" : "=r"(start_time) :: "memory");
-    #pragma unroll
+#pragma unroll
     for (int i = 0; i < LOOP_TIMES; i++) {
 //        asm volatile ("{\n\t""fma.rn.f32 %0, %1, %2 , %0; \n\t"
 //                             "fma.rn.f32 %0, %1, %2 , %0; \n\t"
