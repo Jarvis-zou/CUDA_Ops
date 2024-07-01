@@ -1,4 +1,4 @@
-#include "pch.cuh"
+#include "../pch.cuh"
 #define LOOP_TIMES 5000
 #define N 1536  // maximum number of threads / SM
 //RTX4090 fp32: 83.8 TFLOPS
