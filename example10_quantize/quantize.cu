@@ -22,7 +22,7 @@ void getScalePerTensorSymmetricCPU(const T* in_ptr, const int quantization_bit,
 
 template<typename T>
 void symmetricQuantizePerTensorCPU(const T* in_ptr, const T scale, const int quantization_bit,
-                                       const int num_elements, T* out_ptr) {
+                                   const int num_elements, T* out_ptr) {
     T upper_bound = static_cast<T>(pow(2.0, quantization_bit - 1)) - 1;
     T lower_bound = -upper_bound - 1;
     for(int j = 0; j < num_elements; j++) {
@@ -49,7 +49,7 @@ void getScalePerChannelSymmetricCPU(const T* in_ptr, const int quantization_bit,
 }
 template<typename T>
 void symmetricQuantizePerChannelCPU(const T* in_ptr, const T* scale, const int quantization_bit, const int HW,
-                                        const int num_elements, T* out_ptr) {
+                                    const int num_elements, T* out_ptr) {
     T upper_bound = static_cast<T>(pow(2.0, quantization_bit - 1)) - 1;
     T lower_bound = -upper_bound - 1;
     for(int j = 0; j < num_elements; j++) {
