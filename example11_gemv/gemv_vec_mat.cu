@@ -2,7 +2,7 @@
 
 
 /*
- * Matrix(row/col=M/N) * Vector(row/col=M/1) = NewMatrix(row/col=M/1)
+ *  Vector(row/col=1/M) * Matrix(row/col=N/M)= NewMatrix(row/col=1/M)
  */
 template<typename T>
 void gemvCPU(const T *mat, const T *vec, float *res, int M, int N) {

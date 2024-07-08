@@ -6,5 +6,6 @@
 #define CUDA_PCH_CUH
 #include <cuda_fp16.h>
 #include <iostream>
+#include <string>
 #include <vector>
 #endif //CUDA_PCH_CUH
