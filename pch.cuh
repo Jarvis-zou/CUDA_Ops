@@ -8,4 +8,6 @@
 #include <iostream>
 #include <string>
 #include <vector>
+#include <curand.h>
+#include <curand_kernel.h>
 #endif //CUDA_PCH_CUH
